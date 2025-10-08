@@ -18,7 +18,7 @@ const router = express.Router();
 // Generate JWT Token
 const generateToken = (userId) => {
   return jwt.sign({ userId }, process.env.JWT_SECRET, {
-    expiresIn: '30d' // Token expires in 30 days for lifetime login
+    expiresIn: '5y' // Token expires in 5 years for lifetime login
   });
 };
 
