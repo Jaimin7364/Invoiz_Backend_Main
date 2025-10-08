@@ -111,6 +111,11 @@ router.post('/create-order', auth, requireEmailVerified, async (req, res) => {
 // @access  Private
 router.post('/verify-payment', auth, async (req, res) => {
   try {
+    console.log('=== PAYMENT VERIFICATION START ===');
+    console.log('Request body:', req.body);
+    console.log('User ID:', req.user._id);
+    console.log('User email:', req.user.email);
+    
     const {
       razorpay_order_id,
       razorpay_payment_id,
@@ -119,6 +124,7 @@ router.post('/verify-payment', auth, async (req, res) => {
     } = req.body;
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !plan_type) {
+      console.log('❌ Missing required payment details');
       return res.status(400).json({
         success: false,
         message: 'Missing required payment details'
@@ -131,7 +137,17 @@ router.post('/verify-payment', auth, async (req, res) => {
       user_id: req.user._id
     });
 
+    console.log('🔍 Transaction lookup:', transaction ? 'found' : 'not found');
+    if (transaction) {
+      console.log('Transaction details:', {
+        id: transaction.transaction_id,
+        status: transaction.status,
+        amount: transaction.amount
+      });
+    }
+
     if (!transaction) {
+      console.log('❌ Transaction not found for order:', razorpay_order_id);
       return res.status(404).json({
         success: false,
         message: 'Transaction not found'
@@ -145,10 +161,13 @@ router.post('/verify-payment', auth, async (req, res) => {
       razorpay_signature
     );
 
+    console.log('🔐 Payment signature valid:', isSignatureValid);
+
     if (!isSignatureValid) {
       transaction.status = 'failed';
       await transaction.save();
 
+      console.log('❌ Invalid payment signature');
       return res.status(400).json({
         success: false,
         message: 'Invalid payment signature'
@@ -160,13 +179,22 @@ router.post('/verify-payment', auth, async (req, res) => {
     transaction.razorpay_signature = razorpay_signature;
     transaction.status = 'completed';
     await transaction.save();
+    console.log('✅ Transaction updated to completed');
 
     // Calculate subscription dates
     const startDate = new Date();
     const endDate = calculateSubscriptionEndDate(plan_type, startDate);
     const planDetails = getPlanDetails(plan_type);
 
+    console.log('📅 Subscription dates calculated:', {
+      start: startDate,
+      end: endDate,
+      plan: planDetails.name
+    });
+
     // Update user subscription
+    console.log('👤 Current user subscription before update:', req.user.subscription);
+    
     req.user.subscription = {
       plan_type,
       start_date: startDate,
@@ -177,6 +205,15 @@ router.post('/verify-payment', auth, async (req, res) => {
     };
 
     await req.user.save();
+    console.log('✅ User subscription updated successfully');
+    console.log('👤 New user subscription:', req.user.subscription);
+    
+    // Verify the subscription was saved by checking hasActiveSubscription
+    const hasActive = req.user.hasActiveSubscription();
+    console.log('🔍 User has active subscription:', hasActive);
+    
+    const subscriptionInfo = req.user.getSubscriptionInfo();
+    console.log('📊 Subscription info:', subscriptionInfo);
 
     // Send subscription confirmation email (non-blocking)
     sendSubscriptionEmail(
@@ -192,13 +229,17 @@ router.post('/verify-payment', auth, async (req, res) => {
       message: 'Payment verified and subscription activated successfully!',
       data: {
         transaction_id: transaction.transaction_id,
-        subscription_info: req.user.getSubscriptionInfo(),
+        subscription_info: subscriptionInfo,
         plan_details: planDetails
       }
     });
 
+    console.log('✅ Payment verification completed successfully');
+    console.log('=== PAYMENT VERIFICATION END ===');
+
   } catch (error) {
-    console.error('Verify payment error:', error);
+    console.error('❌ Payment verification error:', error);
+    console.log('=== PAYMENT VERIFICATION END (ERROR) ===');
     res.status(500).json({
       success: false,
       message: 'Payment verification failed'
