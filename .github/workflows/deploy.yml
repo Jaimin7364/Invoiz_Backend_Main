@@ -1,0 +1,51 @@
+name: Deploy to Azure VM (invoiz-backend)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # optional: build on runner if your project needs it
+    # - name: Build (optional)
+    #   run: |
+    #     npm ci
+    #     npm run build
+
+    - name: Set up SSH agent
+      uses: webfactory/ssh-agent@v0.7.0
+      with:
+        ssh-private-key: ${{ secrets.AZURE_VM_SSH_KEY }}
+
+    - name: Add VM to known_hosts
+      run: |
+        mkdir -p ~/.ssh
+        ssh-keyscan -H ${{ secrets.AZURE_VM_IP }} >> ~/.ssh/known_hosts
+        chmod 644 ~/.ssh/known_hosts
+
+    - name: Rsync project to VM (excludes .env & node_modules)
+      run: |
+        rsync -avz --delete \
+          --exclude='.git' \
+          --exclude='node_modules' \
+          --exclude='.env' \
+          ./ ${{ secrets.AZURE_VM_USER }}@${{ secrets.AZURE_VM_IP }}:/var/www/invoiz-backend/
+
+    - name: Install on VM, restart PM2
+      run: |
+        ssh ${{ secrets.AZURE_VM_USER }}@${{ secrets.AZURE_VM_IP }} << 'EOF'
+          set -e
+          cd /var/www/invoiz-backend
+          # install dependencies (use --production on production)
+          npm ci --only=production || npm ci
+          # restart pm2 process named "backend" or start if missing
+          pm2 restart backend || pm2 start server.js --name backend
+          pm2 save
+        EOF
