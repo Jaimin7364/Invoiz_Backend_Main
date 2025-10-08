@@ -70,6 +70,10 @@ const userSchema = new mongoose.Schema({
     razorpay_subscription_id: String,
     amount_paid: Number
   },
+  business_id: {
+    type: String,
+    default: null
+  },
   last_login: Date,
   created_at: {
     type: Date,

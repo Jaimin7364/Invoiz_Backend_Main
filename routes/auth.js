@@ -329,6 +329,29 @@ router.post('/login', loginValidation, async (req, res) => {
 // @access  Private
 router.get('/me', auth, async (req, res) => {
   try {
+    // Get business info if user has a business
+    let businessInfo = null;
+    if (req.user.business_id) {
+      const Business = require('../models/Business');
+      const business = await Business.findOne({ business_id: req.user.business_id });
+      if (business) {
+        businessInfo = {
+          business_id: business.business_id,
+          business_name: business.business_name,
+          business_type: business.business_type,
+          business_address: business.business_address,
+          full_address: business.full_address,
+          gst_number: business.gst_number,
+          upi_id: business.upi_id,
+          contact_details: business.contact_details,
+          operating_hours: business.operating_hours,
+          business_status: business.business_status,
+          verification_status: business.verification_status,
+          created_at: business.created_at
+        };
+      }
+    }
+
     res.json({
       success: true,
       data: {
@@ -341,6 +364,8 @@ router.get('/me', auth, async (req, res) => {
           account_status: req.user.account_status,
           email_verified: req.user.email_verified,
           subscription_info: req.user.getSubscriptionInfo(),
+          business_id: req.user.business_id,
+          business_info: businessInfo,
           last_login: req.user.last_login,
           created_at: req.user.created_at
         }

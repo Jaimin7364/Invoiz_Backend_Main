@@ -1,5 +1,6 @@
 const express = require('express');
 const Business = require('../models/Business');
+const User = require('../models/User');
 const { auth, requireEmailVerified } = require('../middleware/auth');
 const { businessValidation } = require('../middleware/validation');
 
@@ -44,11 +45,22 @@ router.post('/register', auth, requireEmailVerified, businessValidation, async (
 
     await business.save();
 
+    // Update user with business_id
+    await User.findByIdAndUpdate(
+      req.user._id,
+      { 
+        business_id: business.business_id,
+        updated_at: new Date()
+      }
+    );
+
     res.status(201).json({
       success: true,
       message: 'Business registered successfully!',
       data: {
-        business: business.getSummary()
+        business: business.getSummary(),
+        businessId: business.business_id,
+        business_id: business.business_id
       }
     });
 
