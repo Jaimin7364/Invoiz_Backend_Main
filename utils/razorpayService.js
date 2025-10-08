@@ -124,8 +124,14 @@ const calculateSubscriptionEndDate = (planType, startDate = new Date()) => {
     throw new Error('Invalid subscription plan');
   }
 
+  // Create a new date object to avoid modifying the original
   const endDate = new Date(startDate);
+  
+  // Add the number of months for the plan
   endDate.setMonth(endDate.getMonth() + plan.duration_months);
+  
+  // Set to end of day (23:59:59)
+  endDate.setHours(23, 59, 59, 999);
   
   return endDate;
 };

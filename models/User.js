@@ -109,13 +109,28 @@ userSchema.methods.hasActiveSubscription = function() {
 
 // Get subscription details
 userSchema.methods.getSubscriptionInfo = function() {
+  let daysRemaining = 0;
+  
+  if (this.subscription.end_date) {
+    const now = new Date();
+    const endDate = new Date(this.subscription.end_date);
+    
+    // Set current date to start of day for accurate comparison
+    const nowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    // Calculate difference in milliseconds
+    const timeDiff = endDate.getTime() - nowStart.getTime();
+    
+    // Convert to days (if the subscription ends today, it's 0 days remaining)
+    daysRemaining = Math.max(0, Math.floor(timeDiff / (1000 * 60 * 60 * 24)));
+  }
+  
   return {
     plan_type: this.subscription.plan_type,
     status: this.subscription.status,
     start_date: this.subscription.start_date,
     end_date: this.subscription.end_date,
-    days_remaining: this.subscription.end_date ? 
-      Math.max(0, Math.ceil((this.subscription.end_date - new Date()) / (1000 * 60 * 60 * 24))) : 0
+    days_remaining: daysRemaining
   };
 };
 
