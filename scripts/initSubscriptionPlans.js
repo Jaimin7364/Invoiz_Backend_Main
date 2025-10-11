@@ -7,7 +7,7 @@ const subscriptionPlans = [
     plan_id: 'basic',
     name: 'Basic Plan',
     description: 'Perfect for small businesses just getting started',
-    price: 100, // ₹1 in paise
+    price: 10000, // ₹100 in paise
     duration_months: 1,
     features: [
       'Up to 50 invoices per month',
