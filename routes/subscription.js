@@ -192,10 +192,10 @@ router.post('/verify-payment', auth, async (req, res) => {
       plan: planDetails.name
     });
 
-    // Update user subscription
+    // Update user subscription using findByIdAndUpdate for better reliability
     console.log('👤 Current user subscription before update:', req.user.subscription);
     
-    req.user.subscription = {
+    const subscriptionData = {
       plan_type,
       start_date: startDate,
       end_date: endDate,
@@ -204,13 +204,40 @@ router.post('/verify-payment', auth, async (req, res) => {
       amount_paid: transaction.amount / 100 // Convert paise to rupees
     };
 
-    await req.user.save();
+    // Update the user document directly in the database
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      { 
+        $set: { subscription: subscriptionData },
+        $currentDate: { updated_at: true }
+      },
+      { new: true }
+    );
+
+    if (!updatedUser) {
+      throw new Error('Failed to update user subscription');
+    }
+
+    // Update the req.user object with the new subscription data
+    req.user.subscription = updatedUser.subscription;
+    
     console.log('✅ User subscription updated successfully');
     console.log('👤 New user subscription:', req.user.subscription);
     
     // Verify the subscription was saved by checking hasActiveSubscription
     const hasActive = req.user.hasActiveSubscription();
-    console.log('🔍 User has active subscription:', hasActive);
+    console.log('🔍 User has active subscription after update:', hasActive);
+    
+    // Double-check by fetching the user from database
+    const verifyUser = await User.findById(req.user._id);
+    const dbHasActive = verifyUser.hasActiveSubscription();
+    console.log('🔍 Database verification - User has active subscription:', dbHasActive);
+    console.log('🔍 Database subscription data:', verifyUser.subscription);
+    
+    if (!dbHasActive) {
+      console.error('❌ WARNING: Subscription was not properly saved to database!');
+      throw new Error('Subscription activation failed - database update unsuccessful');
+    }
     
     const subscriptionInfo = req.user.getSubscriptionInfo();
     console.log('📊 Subscription info:', subscriptionInfo);
