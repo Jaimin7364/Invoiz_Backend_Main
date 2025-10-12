@@ -29,6 +29,7 @@ router.get('/plans', (req, res) => {
     });
   } catch (error) {
     console.error('Get plans error:', error);
+const { razorpay } = require('../utils/razorpayService');
     res.status(500).json({
       success: false,
       message: 'Failed to get subscription plans'
