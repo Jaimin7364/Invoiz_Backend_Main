@@ -11,7 +11,7 @@ const razorpay = new Razorpay({
 const SUBSCRIPTION_PLANS = {
   basic: {
     name: 'Basic Plan',
-    price: 10000, // Amount in paise (₹100)
+    price: 100, // Amount in paise (₹1)
     duration_months: 1,
     features: [
       'Up to 50 invoices per month',

@@ -1,13 +1,14 @@
 const mongoose = require('mongoose');
+const path = require('path');
 const { SubscriptionPlan } = require('../models/Subscription');
-require('dotenv').config();
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const subscriptionPlans = [
   {
     plan_id: 'basic',
     name: 'Basic Plan',
     description: 'Perfect for small businesses just getting started',
-    price: 10000, // ₹100 in paise
+    price: 100, // ₹1 in paise
     duration_months: 1,
     features: [
       'Up to 50 invoices per month',
@@ -76,6 +77,10 @@ const subscriptionPlans = [
 const initializeSubscriptionPlans = async () => {
   try {
     console.log('Connecting to MongoDB...');
+    if (!process.env.MONGODB_URI) {
+      throw new Error('MONGODB_URI not found. Please set it in server/.env');
+    }
+
     await mongoose.connect(process.env.MONGODB_URI, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
