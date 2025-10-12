@@ -107,12 +107,17 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 
 // Check if user has active subscription
 userSchema.methods.hasActiveSubscription = function() {
-  if (!this.subscription.end_date) return false;
+  if (!this.subscription || !this.subscription.end_date || !this.subscription.status) return false;
   return this.subscription.status === 'active' && this.subscription.end_date > new Date();
 };
 
 // Get subscription details
 userSchema.methods.getSubscriptionInfo = function() {
+  // Return null if no subscription exists
+  if (!this.subscription) {
+    return null;
+  }
+  
   let daysRemaining = 0;
   
   if (this.subscription.end_date) {
@@ -130,10 +135,10 @@ userSchema.methods.getSubscriptionInfo = function() {
   }
   
   return {
-    plan_type: this.subscription.plan_type,
-    status: this.subscription.status,
-    start_date: this.subscription.start_date,
-    end_date: this.subscription.end_date,
+    plan_type: this.subscription.plan_type || null,
+    status: this.subscription.status || null,
+    start_date: this.subscription.start_date || null,
+    end_date: this.subscription.end_date || null,
     days_remaining: daysRemaining
   };
 };

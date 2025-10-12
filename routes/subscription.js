@@ -516,6 +516,74 @@ router.post('/webhook', async (req, res) => {
   }
 });
 
+// @route   GET /api/subscription/debug-user/:email
+// @desc    Debug subscription issues for specific user by email
+// @access  Private
+router.get('/debug-user/:email', auth, async (req, res) => {
+  try {
+    const userEmail = req.params.email;
+    
+    const user = await User.findOne({ email: userEmail });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const transactions = await SubscriptionTransaction.find({
+      user_id: user._id
+    }).sort({ created_at: -1 }).limit(5);
+
+    const hasActiveSubscription = user.hasActiveSubscription();
+    const subscriptionInfo = user.getSubscriptionInfo();
+
+    res.json({
+      success: true,
+      data: {
+        user_info: {
+          id: user._id,
+          email: user.email,
+          user_id: user.user_id,
+          created_at: user.created_at
+        },
+        raw_subscription_data: user.subscription,
+        subscription_status: {
+          has_active: hasActiveSubscription,
+          calculated_info: subscriptionInfo
+        },
+        recent_transactions: transactions.map(t => ({
+          id: t.transaction_id,
+          order_id: t.razorpay_order_id,
+          payment_id: t.razorpay_payment_id,
+          amount: t.amount / 100,
+          status: t.status,
+          plan_id: t.plan_id,
+          created_at: t.created_at,
+          updated_at: t.updated_at
+        })),
+        debug_info: {
+          current_time: new Date(),
+          subscription_exists: user.subscription != null,
+          subscription_has_end_date: user.subscription?.end_date != null,
+          subscription_has_status: user.subscription?.status != null,
+          subscription_status_value: user.subscription?.status,
+          subscription_end_date: user.subscription?.end_date,
+          is_end_date_future: user.subscription?.end_date ? user.subscription.end_date > new Date() : false,
+          calculated_days_remaining: subscriptionInfo?.days_remaining
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Debug user subscription error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get debug information: ' + error.message
+    });
+  }
+});
+
 // @route   GET /api/subscription/debug/:userId
 // @desc    Debug subscription issues (Admin only)
 // @access  Private
@@ -585,6 +653,327 @@ router.get('/debug/:userId', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to get debug information'
+    });
+  }
+});
+
+// @route   POST /api/subscription/manual-verify
+// @desc    Manually verify and fix a pending transaction
+// @access  Private
+router.post('/manual-verify', auth, async (req, res) => {
+  try {
+    const { transaction_id, razorpay_payment_id } = req.body;
+
+    if (!transaction_id && !razorpay_payment_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Either transaction_id or razorpay_payment_id is required'
+      });
+    }
+
+    let transaction;
+    if (transaction_id) {
+      transaction = await SubscriptionTransaction.findOne({
+        transaction_id,
+        user_id: req.user._id
+      });
+    } else {
+      transaction = await SubscriptionTransaction.findOne({
+        razorpay_payment_id,
+        user_id: req.user._id
+      });
+    }
+
+    if (!transaction) {
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found'
+      });
+    }
+
+    console.log('🔧 Manual verification for transaction:', transaction.transaction_id);
+    console.log('Current status:', transaction.status);
+
+    if (transaction.status === 'completed') {
+      return res.json({
+        success: true,
+        message: 'Transaction is already completed',
+        data: { transaction_status: transaction.status }
+      });
+    }
+
+    // Update transaction to completed
+    transaction.status = 'completed';
+    transaction.updated_at = new Date();
+    
+    // If payment ID is provided but not in transaction, update it
+    if (razorpay_payment_id && !transaction.razorpay_payment_id) {
+      transaction.razorpay_payment_id = razorpay_payment_id;
+    }
+    
+    await transaction.save();
+
+    // Create subscription for user
+    const startDate = new Date();
+    const endDate = calculateSubscriptionEndDate(transaction.plan_id, startDate);
+    
+    const subscriptionData = {
+      plan_type: transaction.plan_id,
+      start_date: startDate,
+      end_date: endDate,
+      status: 'active',
+      razorpay_subscription_id: transaction.razorpay_payment_id || `manual_${Date.now()}`,
+      amount_paid: transaction.amount / 100
+    };
+
+    await User.findByIdAndUpdate(
+      req.user._id,
+      { 
+        $set: { subscription: subscriptionData },
+        $currentDate: { updated_at: true }
+      },
+      { new: true }
+    );
+
+    console.log('✅ Manual verification completed for transaction:', transaction.transaction_id);
+
+    res.json({
+      success: true,
+      message: 'Transaction manually verified and subscription activated',
+      data: {
+        transaction_id: transaction.transaction_id,
+        new_status: transaction.status,
+        subscription_data: subscriptionData
+      }
+    });
+
+  } catch (error) {
+    console.error('Manual verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Manual verification failed: ' + error.message
+    });
+  }
+});
+
+// @route   POST /api/subscription/verify-payment-v2
+// @desc    Verify payment and activate subscription (Enhanced version)
+// @access  Private
+router.post('/verify-payment-v2', auth, async (req, res) => {
+  let session = null;
+
+  try {
+    console.log('=== PAYMENT VERIFICATION V2 START ===');
+    console.log('Request timestamp:', new Date().toISOString());
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('User ID:', req.user._id);
+    console.log('User email:', req.user.email);
+    
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      plan_type
+    } = req.body;
+
+    // Validate required fields
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !plan_type) {
+      console.log('❌ Missing required payment details');
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required payment details',
+        received_fields: {
+          razorpay_order_id: !!razorpay_order_id,
+          razorpay_payment_id: !!razorpay_payment_id,
+          razorpay_signature: !!razorpay_signature,
+          plan_type: !!plan_type
+        }
+      });
+    }
+
+    // Start database session
+    session = await mongoose.startSession();
+    session.startTransaction();
+    console.log('🔄 Database transaction started');
+
+    // Find the transaction
+    const transaction = await SubscriptionTransaction.findOne({
+      razorpay_order_id,
+      user_id: req.user._id
+    }).session(session);
+
+    console.log('🔍 Transaction lookup result:', {
+      found: !!transaction,
+      transaction_id: transaction?.transaction_id,
+      current_status: transaction?.status,
+      amount: transaction?.amount
+    });
+
+    if (!transaction) {
+      console.log('❌ Transaction not found');
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found for this user'
+      });
+    }
+
+    // Check if transaction is already processed
+    if (transaction.status === 'completed') {
+      console.log('⚠️ Transaction already processed');
+      await session.abortTransaction();
+      session.endSession();
+      
+      const existingUser = await User.findById(req.user._id);
+      const subscriptionInfo = existingUser.getSubscriptionInfo();
+      const planDetails = getPlanDetails(plan_type);
+      
+      return res.json({
+        success: true,
+        message: 'Payment already verified and subscription is active!',
+        data: {
+          transaction_id: transaction.transaction_id,
+          subscription_info: subscriptionInfo,
+          plan_details: planDetails
+        }
+      });
+    }
+
+    // Verify payment signature
+    console.log('🔐 Verifying payment signature...');
+    const isSignatureValid = verifyPaymentSignature(
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature
+    );
+
+    console.log('🔐 Payment signature verification result:', isSignatureValid);
+
+    if (!isSignatureValid) {
+      transaction.status = 'failed';
+      await transaction.save({ session });
+      await session.commitTransaction();
+      session.endSession();
+
+      console.log('❌ Invalid payment signature');
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid payment signature'
+      });
+    }
+
+    // Update transaction within the session
+    console.log('💾 Updating transaction status...');
+    transaction.razorpay_payment_id = razorpay_payment_id;
+    transaction.razorpay_signature = razorpay_signature;
+    transaction.status = 'completed';
+    transaction.updated_at = new Date();
+    
+    await transaction.save({ session });
+    console.log('✅ Transaction updated to completed');
+
+    // Calculate subscription dates
+    const startDate = new Date();
+    const endDate = calculateSubscriptionEndDate(plan_type, startDate);
+    const planDetails = getPlanDetails(plan_type);
+
+    console.log('📅 Subscription dates calculated:', {
+      start: startDate.toISOString(),
+      end: endDate.toISOString(),
+      plan: planDetails.name
+    });
+
+    // Update user subscription
+    console.log('👤 Updating user subscription...');
+    
+    const subscriptionData = {
+      plan_type,
+      start_date: startDate,
+      end_date: endDate,
+      status: 'active',
+      razorpay_subscription_id: razorpay_payment_id,
+      amount_paid: transaction.amount / 100 // Convert paise to rupees
+    };
+
+    console.log('📝 New subscription data:', subscriptionData);
+
+    // Update the user document within the transaction
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      { 
+        $set: { subscription: subscriptionData },
+        $currentDate: { updated_at: true }
+      },
+      { new: true, session, runValidators: true }
+    );
+
+    if (!updatedUser) {
+      throw new Error('Failed to update user subscription');
+    }
+
+    console.log('✅ User subscription updated successfully');
+    console.log('👤 Updated subscription:', updatedUser.subscription);
+    
+    // Verify the subscription was saved
+    const hasActive = updatedUser.hasActiveSubscription();
+    console.log('🔍 User has active subscription after update:', hasActive);
+    
+    if (!hasActive) {
+      console.error('❌ WARNING: Subscription activation check failed!');
+      throw new Error('Subscription activation verification failed');
+    }
+    
+    // Commit the transaction
+    await session.commitTransaction();
+    session.endSession();
+    session = null;
+    
+    console.log('✅ Database transaction committed successfully');
+    
+    // Final verification
+    const finalUser = await User.findById(req.user._id);
+    const subscriptionInfo = finalUser.getSubscriptionInfo();
+    
+    console.log('🔍 Final subscription info:', subscriptionInfo);
+
+    // Send email (non-blocking)
+    sendSubscriptionEmail(
+      req.user.email,
+      req.user.full_name,
+      planDetails.name,
+      transaction.amount / 100,
+      endDate
+    ).catch(console.error);
+
+    res.json({
+      success: true,
+      message: 'Payment verified and subscription activated successfully!',
+      data: {
+        transaction_id: transaction.transaction_id,
+        subscription_info: subscriptionInfo,
+        plan_details: planDetails
+      }
+    });
+
+    console.log('✅ Payment verification V2 completed successfully');
+    console.log('=== PAYMENT VERIFICATION V2 END ===');
+
+  } catch (error) {
+    console.error('❌ Payment verification V2 error:', error);
+    
+    if (session) {
+      try {
+        await session.abortTransaction();
+        session.endSession();
+      } catch (rollbackError) {
+        console.error('❌ Rollback error:', rollbackError);
+      }
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Payment verification failed: ' + error.message
     });
   }
 });
