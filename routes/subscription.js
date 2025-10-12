@@ -483,7 +483,7 @@ router.post('/cancel', auth, async (req, res) => {
 // @access  Public (but verified)
 router.post('/webhook', async (req, res) => {
   try {
-    const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const secret = "@cuJ28rdcS*}>$C";
     const body = JSON.stringify(req.body);
     const signature = req.headers['x-razorpay-signature'];
 
