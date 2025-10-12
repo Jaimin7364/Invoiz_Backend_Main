@@ -8,9 +8,11 @@ const {
   verifyPaymentSignature,
   calculateSubscriptionEndDate,
   getAllPlans,
-  getPlanDetails
+  getPlanDetails,
+  razorpay,
 } = require('../utils/razorpayService');
 const { sendSubscriptionEmail } = require('../utils/emailService');
+const crypto = require('crypto');
 
 const router = express.Router();
 
@@ -29,7 +31,6 @@ router.get('/plans', (req, res) => {
     });
   } catch (error) {
     console.error('Get plans error:', error);
-const { razorpay } = require('../utils/razorpayService');
     res.status(500).json({
       success: false,
       message: 'Failed to get subscription plans'
@@ -482,34 +483,78 @@ router.post('/cancel', auth, async (req, res) => {
 // @access  Public (but verified)
 router.post('/webhook', async (req, res) => {
   try {
-    const { event, payload } = req.body;
+    const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const body = JSON.stringify(req.body);
+    const signature = req.headers['x-razorpay-signature'];
 
-    // Verify webhook signature (implement based on Razorpay docs)
-    // const webhookSignature = req.headers['x-razorpay-signature'];
-    
-    console.log('Received webhook:', event);
-
-    switch (event) {
-      case 'payment.captured':
-        // Handle successful payment
-        console.log('Payment captured:', payload.payment.entity);
-        break;
-      
-      case 'payment.failed':
-        // Handle failed payment
-        console.log('Payment failed:', payload.payment.entity);
-        break;
-      
-      case 'subscription.cancelled':
-        // Handle subscription cancellation
-        console.log('Subscription cancelled:', payload.subscription.entity);
-        break;
-      
-      default:
-        console.log('Unhandled webhook event:', event);
+    if (secret) {
+      const expected = crypto
+        .createHmac('sha256', secret)
+        .update(body)
+        .digest('hex');
+      if (expected !== signature) {
+        console.error('❌ Invalid webhook signature');
+        return res.status(400).json({ error: 'Invalid signature' });
+      }
+    } else {
+      console.warn('⚠️ RAZORPAY_WEBHOOK_SECRET not set; skipping signature verification');
     }
 
-    res.status(200).json({ status: 'ok' });
+    const { event, payload } = req.body || {};
+    console.log('📬 Webhook event:', event);
+
+    if (event === 'payment.captured') {
+      const payment = payload?.payment?.entity;
+      if (!payment) return res.status(200).json({ status: 'ignored' });
+
+      const orderId = payment.order_id;
+      const paymentId = payment.id;
+
+      const txn = await SubscriptionTransaction.findOne({ razorpay_order_id: orderId });
+      if (!txn) return res.status(200).json({ status: 'no-transaction' });
+      if (txn.status === 'completed') return res.status(200).json({ status: 'already-completed' });
+
+      txn.razorpay_payment_id = paymentId;
+      txn.razorpay_signature = 'webhook_verified';
+      txn.status = 'completed';
+      txn.updated_at = new Date();
+      await txn.save();
+
+      const startDate = new Date();
+      const endDate = calculateSubscriptionEndDate(txn.plan_id, startDate);
+      await User.findByIdAndUpdate(
+        txn.user_id,
+        {
+          $set: { subscription: {
+            plan_type: txn.plan_id,
+            start_date: startDate,
+            end_date: endDate,
+            status: 'active',
+            razorpay_subscription_id: paymentId,
+            amount_paid: (txn.amount || 0) / 100,
+          } },
+          $currentDate: { updated_at: true },
+        },
+        { new: true }
+      );
+
+      console.log('✅ Webhook completed transaction', txn.transaction_id);
+      return res.status(200).json({ status: 'completed' });
+    }
+
+    if (event === 'payment.failed') {
+      const payment = payload?.payment?.entity;
+      const orderId = payment?.order_id;
+      if (orderId) {
+        await SubscriptionTransaction.updateOne(
+          { razorpay_order_id: orderId },
+          { $set: { status: 'failed', updated_at: new Date() } }
+        );
+      }
+      return res.status(200).json({ status: 'failed-marked' });
+    }
+
+    return res.status(200).json({ status: 'ignored' });
 
   } catch (error) {
     console.error('Webhook error:', error);
@@ -777,8 +822,8 @@ router.post('/verify-payment-v2', auth, async (req, res) => {
       plan_type
     } = req.body;
 
-    // Validate required fields
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !plan_type) {
+    // Validate required fields (allow missing signature, we'll fallback)
+    if (!razorpay_order_id || !razorpay_payment_id || !plan_type) {
       console.log('❌ Missing required payment details');
       return res.status(400).json({
         success: false,
@@ -841,38 +886,62 @@ router.post('/verify-payment-v2', auth, async (req, res) => {
       });
     }
 
-    // Verify payment signature
-    console.log('🔐 Verifying payment signature...');
-    const isSignatureValid = verifyPaymentSignature(
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature
-    );
-
-    console.log('🔐 Payment signature verification result:', isSignatureValid);
-
-    if (!isSignatureValid) {
-      transaction.status = 'failed';
-      await transaction.save({ session });
-      await session.commitTransaction();
-      session.endSession();
-
-      console.log('❌ Invalid payment signature');
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid payment signature'
-      });
+    // Verify payment signature when available
+    let isSignatureValid = false;
+    if (razorpay_signature) {
+      console.log('🔐 Verifying payment signature...');
+      isSignatureValid = verifyPaymentSignature(
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature
+      );
+      console.log('🔐 Payment signature verification result:', isSignatureValid);
+    } else {
+      console.log('ℹ️ No signature provided by client, will attempt Razorpay fallback');
     }
 
-    // Update transaction within the session
-    console.log('💾 Updating transaction status...');
-    transaction.razorpay_payment_id = razorpay_payment_id;
-    transaction.razorpay_signature = razorpay_signature;
-    transaction.status = 'completed';
-    transaction.updated_at = new Date();
-    
-    await transaction.save({ session });
-    console.log('✅ Transaction updated to completed');
+    if (!isSignatureValid) {
+      // Attempt fallback with Razorpay payments.fetch
+      try {
+        console.log('🔄 Attempting fallback verification via Razorpay payments.fetch');
+        const payment = await razorpay.payments.fetch(razorpay_payment_id);
+        const matchesOrder = payment && payment.order_id === razorpay_order_id;
+        const isCaptured = payment && payment.status === 'captured';
+        if (!matchesOrder || !isCaptured) {
+          console.log('❌ Fallback verification failed', { matchesOrder, isCaptured });
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            success: false,
+            message: 'Payment could not be verified at this time. If debited, it will auto-complete shortly.'
+          });
+        }
+
+        console.log('✅ Fallback verified: payment captured and order matches. Completing transaction.');
+        transaction.razorpay_payment_id = payment.id;
+        transaction.razorpay_signature = 'fallback_verified_via_api';
+        transaction.status = 'completed';
+        transaction.updated_at = new Date();
+        await transaction.save({ session });
+      } catch (fe) {
+        console.error('❌ Fallback verification error:', fe);
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid signature and fallback verification failed'
+        });
+      }
+    } else {
+      // Update transaction within the session (signature valid)
+      console.log('💾 Updating transaction status...');
+      transaction.razorpay_payment_id = razorpay_payment_id;
+      transaction.razorpay_signature = razorpay_signature;
+      transaction.status = 'completed';
+      transaction.updated_at = new Date();
+      await transaction.save({ session });
+      console.log('✅ Transaction updated to completed');
+    }
 
     // Calculate subscription dates
     const startDate = new Date();
@@ -976,6 +1045,134 @@ router.post('/verify-payment-v2', auth, async (req, res) => {
       success: false,
       message: 'Payment verification failed: ' + error.message
     });
+  }
+});
+
+// @route   POST /api/subscription/verify-by-order
+// @desc    Complete payment and activate subscription using only the Razorpay order_id (server-driven)
+// @access  Private
+router.post('/verify-by-order', auth, async (req, res) => {
+  let session = null;
+  try {
+    const { razorpay_order_id, plan_type } = req.body || {};
+    if (!razorpay_order_id) {
+      return res.status(400).json({ success: false, message: 'razorpay_order_id is required' });
+    }
+
+    // Start DB session
+    session = await mongoose.startSession();
+    session.startTransaction();
+
+    // Find transaction for this user and order
+    const transaction = await SubscriptionTransaction.findOne({
+      razorpay_order_id,
+      user_id: req.user._id,
+    }).session(session);
+
+    if (!transaction) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ success: false, message: 'Transaction not found for this order' });
+    }
+
+    if (transaction.status === 'completed') {
+      await session.abortTransaction();
+      session.endSession();
+      const existingUser = await User.findById(req.user._id);
+      return res.json({
+        success: true,
+        message: 'Payment already verified and subscription active',
+        data: {
+          transaction_id: transaction.transaction_id,
+          subscription_info: existingUser.getSubscriptionInfo(),
+          plan_details: getPlanDetails(transaction.plan_id)
+        }
+      });
+    }
+
+    // Server-side verification using Razorpay Orders API
+    let capturedPayment = null;
+    try {
+      const paymentsResp = await razorpay.orders.fetchPayments(razorpay_order_id);
+      const items = paymentsResp && (paymentsResp.items || paymentsResp);
+      if (Array.isArray(items)) {
+        capturedPayment = items.find((p) => p.status === 'captured');
+      }
+    } catch (e) {
+      console.error('Error fetching payments for order:', e);
+    }
+
+    if (!capturedPayment) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'Payment not captured yet. Please wait a moment and retry.',
+      });
+    }
+
+    // Complete transaction
+    transaction.razorpay_payment_id = capturedPayment.id;
+    transaction.razorpay_signature = 'server_verified_via_orders_api';
+    transaction.status = 'completed';
+    transaction.updated_at = new Date();
+    await transaction.save({ session });
+
+    // Activate subscription
+    const effectivePlan = plan_type || transaction.plan_id;
+    const startDate = new Date();
+    const endDate = calculateSubscriptionEndDate(effectivePlan, startDate);
+    const planDetails = getPlanDetails(effectivePlan);
+    const subscriptionData = {
+      plan_type: effectivePlan,
+      start_date: startDate,
+      end_date: endDate,
+      status: 'active',
+      razorpay_subscription_id: capturedPayment.id,
+      amount_paid: (transaction.amount || 0) / 100,
+    };
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        $set: { subscription: subscriptionData },
+        $currentDate: { updated_at: true },
+      },
+      { new: true, session }
+    );
+
+    if (!updatedUser) {
+      throw new Error('Failed to update user subscription');
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+    session = null;
+
+    // Non-blocking email
+    sendSubscriptionEmail(
+      req.user.email,
+      req.user.full_name,
+      planDetails?.name || 'Plan',
+      (transaction.amount || 0) / 100,
+      endDate
+    ).catch(() => {});
+
+    return res.json({
+      success: true,
+      message: 'Payment verified and subscription activated successfully',
+      data: {
+        transaction_id: transaction.transaction_id,
+        subscription_info: updatedUser.getSubscriptionInfo(),
+        plan_details: planDetails,
+      }
+    });
+  } catch (error) {
+    console.error('verify-by-order error:', error);
+    if (session) {
+      try { await session.abortTransaction(); session.endSession(); } catch {}
+    }
+    return res.status(500).json({ success: false, message: 'Verification failed: ' + error.message });
   }
 });
 
