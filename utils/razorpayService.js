@@ -12,24 +12,19 @@ const SUBSCRIPTION_PLANS = {
   basic: {
     name: 'Basic Plan',
     price: 100, // Amount in paise (₹1)
-    currency: 'INR',
-    validity_period: 1,
-    validity_type: 'monthly',
+    duration_months: 1,
     features: [
       'Up to 50 invoices per month',
       'Basic invoice templates',
       'Customer management',
       'Payment tracking',
       'Email support'
-    ],
-    is_popular: false
+    ]
   },
   pro: {
     name: 'Pro Plan',
     price: 54900, // Amount in paise (₹549)
-    currency: 'INR',
-    validity_period: 6,
-    validity_type: 'monthly',
+    duration_months: 6,
     features: [
       'Up to 500 invoices per month',
       'Premium invoice templates',
@@ -38,15 +33,12 @@ const SUBSCRIPTION_PLANS = {
       'Inventory management',
       'Reports & analytics',
       'Priority email support'
-    ],
-    is_popular: true
+    ]
   },
   premium: {
     name: 'Premium Plan',
     price: 99900, // Amount in paise (₹999)
-    currency: 'INR',
-    validity_period: 12,
-    validity_type: 'monthly',
+    duration_months: 12,
     features: [
       'Unlimited invoices',
       'All premium templates',
@@ -56,15 +48,12 @@ const SUBSCRIPTION_PLANS = {
       'Detailed reports & analytics',
       'GST compliance features',
       'Phone & email support'
-    ],
-    is_popular: false
+    ]
   },
   enterprise: {
     name: 'Enterprise Plan',
     price: 249900, // Amount in paise (₹2499)
-    currency: 'INR',
-    validity_period: 36,
-    validity_type: 'monthly',
+    duration_months: 36,
     features: [
       'Everything in Premium',
       'Multi-location support',
@@ -74,8 +63,7 @@ const SUBSCRIPTION_PLANS = {
       'Dedicated account manager',
       '24/7 priority support',
       'Custom reporting'
-    ],
-    is_popular: false
+    ]
   }
 };
 
