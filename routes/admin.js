@@ -172,6 +172,7 @@ router.get('/users/:userId', auth, requireAdmin, async (req, res) => {
         transactions: transactions.map(t => ({
           transaction_id: t.transaction_id,
           plan_id: t.plan_id,
+          plan_name: t.plan_name || 'Subscription',
           amount: t.amount / 100,
           status: t.status,
           created_at: t.created_at,
