@@ -319,6 +319,98 @@ router.post('/users/:userId/activate', auth, requireAdmin, async (req, res) => {
   }
 });
 
+// @route   POST /api/admin/users/:userId/modify-subscription
+// @desc    Extend or reduce user subscription
+// @access  Private (Admin only)
+router.post('/users/:userId/modify-subscription', auth, requireAdmin, async (req, res) => {
+  try {
+    const { days, action } = req.body;
+
+    if (!days || !action) {
+      return res.status(400).json({
+        success: false,
+        message: 'Days and action are required'
+      });
+    }
+
+    if (!['extend', 'reduce'].includes(action)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Action must be either "extend" or "reduce"'
+      });
+    }
+
+    const daysNum = parseInt(days);
+    if (isNaN(daysNum) || daysNum <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Days must be a positive number'
+      });
+    }
+
+    const user = await User.findById(req.params.userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (!user.subscription || !user.subscription.end_date) {
+      return res.status(400).json({
+        success: false,
+        message: 'User does not have a subscription to modify'
+      });
+    }
+
+    const currentEndDate = new Date(user.subscription.end_date);
+    let newEndDate;
+
+    if (action === 'extend') {
+      // Add days to subscription
+      newEndDate = new Date(currentEndDate);
+      newEndDate.setDate(newEndDate.getDate() + daysNum);
+      
+      // Update subscription status if it was expired
+      if (user.subscription.status === 'expired' || currentEndDate < new Date()) {
+        user.subscription.status = 'active';
+      }
+    } else {
+      // Reduce days from subscription
+      newEndDate = new Date(currentEndDate);
+      newEndDate.setDate(newEndDate.getDate() - daysNum);
+      
+      // Check if new end date is in the past
+      if (newEndDate < new Date()) {
+        user.subscription.status = 'expired';
+      }
+    }
+
+    user.subscription.end_date = newEndDate;
+    await user.save();
+
+    console.log(`Admin ${req.user.email} ${action}ed subscription for user ${user.email} by ${daysNum} days`);
+
+    res.json({
+      success: true,
+      message: `Subscription ${action}ed by ${daysNum} days successfully`,
+      data: {
+        user_id: user.user_id,
+        subscription: user.getSubscriptionInfo(),
+        has_active_subscription: user.hasActiveSubscription()
+      }
+    });
+
+  } catch (error) {
+    console.error('Modify subscription error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to modify subscription'
+    });
+  }
+});
+
 // @route   GET /api/admin/stats
 // @desc    Get admin dashboard statistics
 // @access  Private (Admin only)
