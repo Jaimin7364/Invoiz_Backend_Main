@@ -98,7 +98,7 @@ const businessValidation = [
     .withMessage('Please provide a valid 6-digit pincode'),
   
   body('gst_number')
-    .optional()
+    .optional({ nullable: true, checkFalsy: true })
     .matches(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/)
     .withMessage('Please provide a valid GST number'),
   
