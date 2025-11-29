@@ -38,6 +38,7 @@ app.use('/api/subscription', require('./routes/subscription'));
 app.use('/api/user', require('./routes/user'));
 app.use('/api/products', require('./routes/product'));
 app.use('/api/invoices', require('./routes/invoice'));
+app.use('/api/admin', require('./routes/admin'));
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
